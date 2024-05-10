@@ -130,7 +130,7 @@ class Recommender:
         return np.sqrt(sum_rankings/num_ratings)
     
 
-    def combined_metrics_efficient(self):
+    def metrics(self):
         # Initialize sums and counts
         sum_ratings_nll = 0.0  # Sum of squared errors for neg_log_likelihood
         sum_rankings_rmse = 0.0  # Sum of squared errors for RMSE
@@ -165,6 +165,41 @@ class Recommender:
 
         # Combine all terms for neg_log_likelihood
         neg_log_likelihood = (self.lam / 2) * sum_ratings_nll + (self.tau / 2) * (bias_user_sum + bias_movie_sum) + user_sum + movie_sum
+
+        # Compute RMSE
+        RMSE = np.sqrt(sum_rankings_rmse / num_ratings)
+
+        return neg_log_likelihood, RMSE
+
+    def metrics_biases_only(self):
+        # Initialize sums and counts
+        sum_ratings_nll = 0.0  # Sum of squared errors for neg_log_likelihood
+        sum_rankings_rmse = 0.0  # Sum of squared errors for RMSE
+        num_ratings = 0  # Count of ratings for RMSE
+
+        # Calculate errors for each user's ratings
+        for m, user in enumerate(self.users):
+            user_bias = self.user_biases[m]
+
+            for n, rank in user.ratings:
+                item_bias = self.movie_biases[int(n)]
+
+                # Compute prediction error
+                prediction_error = rank - (user_bias + item_bias)
+                
+                # Update sums for neg_log_likelihood
+                sum_ratings_nll += prediction_error**2
+                
+                # Update sums for RMSE
+                sum_rankings_rmse += prediction_error**2
+                num_ratings += 1
+
+        # Bias regularization terms
+        bias_user_sum = np.sum(self.user_biases**2)
+        bias_movie_sum = np.sum(self.movie_biases**2)
+
+        # Combine all terms for neg_log_likelihood
+        neg_log_likelihood = (self.lam / 2) * sum_ratings_nll + (self.tau / 2) * (bias_user_sum + bias_movie_sum)
 
         # Compute RMSE
         RMSE = np.sqrt(sum_rankings_rmse / num_ratings)
@@ -275,28 +310,39 @@ class Recommender:
         inner_products = np.einsum('ij,ij->i', matrix, matrix)
         return np.mean(inner_products)
     
-    def init_statistics():
+    def init_statistics(biases_only=False):
         statistics = {} 
         statistics['neg_log_liks'] = []
         statistics['RMSEs'] = []
-        statistics['user_embed_length'] = []
-        statistics['item_embed_length'] = []
         statistics['mean_user_bias'] = []
         statistics['mean_item_bias'] = []
+
+        if not biases_only:
+            statistics['user_embed_length'] = []
+            statistics['item_embed_length'] = []
+
         return statistics
 
-    def update_statistics(self, statistics):
-        neg_log_lik, RMSE = self.combined_metrics_efficient()
-
-        statistics['neg_log_liks'].append(neg_log_lik)
-        statistics['RMSEs'].append(RMSE)
-        statistics['user_embed_length'].append(Recommender.avg_inner_product(self.U))
-        statistics['item_embed_length'].append(Recommender.avg_inner_product(self.V))
+    def update_statistics(self, statistics, biases_only=False):
         statistics['mean_user_bias'].append(np.mean(self.user_biases))
         statistics['mean_item_bias'].append(np.mean(self.movie_biases))
 
+        if not biases_only:
+            neg_log_lik, RMSE = self.metrics()
 
-    def fit_vectorized(self, max_iter=20):
+            statistics['neg_log_liks'].append(neg_log_lik)
+            statistics['RMSEs'].append(RMSE)
+            statistics['user_embed_length'].append(Recommender.avg_inner_product(self.U))
+            statistics['item_embed_length'].append(Recommender.avg_inner_product(self.V))
+        else:
+            neg_log_lik, RMSE = self.metrics_biases_only()
+
+            statistics['neg_log_liks'].append(neg_log_lik)
+            statistics['RMSEs'].append(RMSE)
+
+
+
+    def fit(self, max_iter=20):
         start_time = time.time()
         M = len(self.users)
         N = len(self.movies)
@@ -372,6 +418,56 @@ class Recommender:
             
             start_time = time.time()
             self.update_statistics(statistics)
+            elapsed_time_1 = time.time() - start_time
+            print(f"Updated statistics: {elapsed_time_1}")
+
+        return statistics 
+
+    def fit_biases_only(self, max_iter=20):
+        start_time = time.time()
+        M = len(self.users)
+        N = len(self.movies)
+
+        #user biases
+        self.user_biases = np.zeros((M))
+        #movie biases
+        self.movie_biases = np.zeros((N))
+
+        #initialize U and V matrices
+        self.U = np.zeros((M, self.k)) 
+        self.V = np.zeros((N, self.k)) 
+        embedding_zeros = np.zeros((self.k, ))
+
+        statistics = Recommender.init_statistics(biases_only=True)
+        self.update_statistics(statistics, biases_only=True)
+
+        elapsed_time = time.time() - start_time
+        print(f"Initialized variables and calculated statistics: {elapsed_time}s")
+
+        for it in tqdm(range(max_iter)):
+            #update user parameters
+            start_time = time.time()
+            for m, user in zip(range(M), self.users):
+                ratings = user.ratings
+                #---user biases---
+                self.user_biases[m] = Recommender.update_user_bias_vectorized(self.lam, self.gamma, ratings, embedding_zeros, self.V, self.movie_biases)
+            
+            elapsed_time_1 = time.time() - start_time
+            print(f"Updated user embeddings and biases: {elapsed_time_1}")
+
+            #update movie parameters
+            start_time = time.time()
+            for n, item in zip(range(N), self.movies):
+                ratings = item.ratings
+                item_embedding = self.V[n,:]
+                #---item biases---
+                self.movie_biases[n] = Recommender.update_item_bias_vectorized(self.lam, self.gamma, ratings, embedding_zeros, self.U, self.user_biases)
+
+            elapsed_time_2 = time.time() - start_time
+            print(f"Updated item embeddings and biases: {elapsed_time_2}")
+            
+            start_time = time.time()
+            self.update_statistics(statistics, biases_only=True)
             elapsed_time_1 = time.time() - start_time
             print(f"Updated statistics: {elapsed_time_1}")
 
