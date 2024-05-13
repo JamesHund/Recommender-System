@@ -153,51 +153,21 @@ class Recommender:
 
     def predict_movies_for_user(self, uid, biases_only=False):
         #return movie recommendations
-        user_index = self.uid_map[uid]
-        user_embedding = self.U[user_index, :]
-        assert user_embedding.shape[0] == self.k
+        m = self.uid_map[uid]
+        user_embedding = self.U[m, :]
         
-        inner_products = self.V.dot(user_embedding)
-        with_biases = inner_products + self.movie_biases + self.user_biases[user_index]
-        sorted_indices = np.argsort(-with_biases)
+        expected_rating = self.movie_biases + self.user_biases[m]
+
+        if not biases_only:
+            inner_products = self.V.dot(user_embedding)
+            expected_rating = expected_rating + inner_products
+
+        sorted_indices = np.argsort(-expected_rating)
         
-        ratings = with_biases[sorted_indices]
+        ratings = expected_rating[sorted_indices]
         titles = np.array([self.movies[idx].title for idx in sorted_indices])
         return ratings, titles
             
-    def neg_log_likelihood(self):
-        sum_ratings = 0.0
-        user_sum = 0.0
-
-        for m, user in zip(range(len(self.users)), self.users):
-            for n, rank in user.ratings:
-                sum_ratings += (rank - self.U[m,:].dot(self.V[int(n),:]) - self.user_biases[m] - self.movie_biases[int(n)])**2
-            
-            user_sum += self.U[m,:].dot(self.U[m,:])
-        
-        user_sum *= self.tau/2
-
-        movie_sum = 0.0
-        for n in range(len(self.movies)):
-            movie_sum += self.V[n,:].dot(self.V[n,:])
-        
-        movie_sum *= self.tau/2
-
-        return (self.lam/2)*sum_ratings + (self.tau/2)*(self.user_biases.dot(self.user_biases) + self.movie_biases.dot(self.movie_biases)) + user_sum + movie_sum
-
-    def RMSE(self):
-        sum_rankings = 0.0
-
-        num_ratings = 0
-        for m, user in zip(range(len(self.users)), self.users):
-            for n, rank in user.ratings:
-                sum_rankings += (rank - self.U[m,:].dot(self.V[int(n),:]) - self.user_biases[m] - self.movie_biases[int(n)])**2
-                num_ratings += 1
-        
-        
-        return np.sqrt(sum_rankings/num_ratings)
-    
-
     def metrics(self, test=False):
         if not test:
             U = self.U
@@ -302,7 +272,54 @@ class Recommender:
 
         return neg_log_likelihood, RMSE
 
-    def update_user_bias_vectorized(lam, gamma, ratings, user_embedding, item_embeddings, item_biases):
+    
+    def init_statistics(self, biases_only=False, extra_stats=False):
+        suffixes = [""]
+        if self.train_test_split:
+            suffixes = ["", "_test"]
+        
+        statistics = {} 
+        for suffix in suffixes:
+            statistics[f'neg_log_liks{suffix}'] = []
+            statistics[f'RMSEs{suffix}'] = []
+
+            if extra_stats:
+                statistics[f'mean_user_bias{suffix}'] = []
+                statistics[f'mean_item_bias{suffix}'] = []
+
+                if not biases_only:
+                    statistics[f'user_embed_length{suffix}'] = []
+                    statistics[f'item_embed_length{suffix}'] = []
+        
+        return statistics
+
+    def update_statistics(self, statistics, biases_only=False, extra_stats=False):
+        suffixes = [""]
+        if self.train_test_split:
+            suffixes = ["", "_test"]
+        
+        for suffix in suffixes:
+            test = "test" in suffix
+            if extra_stats:
+                statistics[f'mean_user_bias{suffix}'].append(np.mean(self.user_biases))
+                statistics[f'mean_item_bias{suffix}'].append(np.mean(self.movie_biases))
+
+            if not biases_only:
+                neg_log_lik, RMSE = self.metrics(test=test)
+
+                statistics[f'neg_log_liks{suffix}'].append(neg_log_lik)
+                statistics[f'RMSEs{suffix}'].append(RMSE)
+
+                if extra_stats:
+                    statistics[f'user_embed_length{suffix}'].append(Recommender.avg_inner_product(self.U))
+                    statistics[f'item_embed_length{suffix}'].append(Recommender.avg_inner_product(self.V))
+            else:
+                neg_log_lik, RMSE = self.metrics_biases_only(test=test)
+
+                statistics[f'neg_log_liks{suffix}'].append(neg_log_lik)
+                statistics[f'RMSEs{suffix}'].append(RMSE)
+
+    def update_user_bias(lam, gamma, ratings, user_embedding, item_embeddings, item_biases):
         if len(ratings) == 0:
             return 0.0
 
@@ -323,7 +340,7 @@ class Recommender:
 
         return coeff * summ
 
-    def update_item_bias_vectorized(lam, gamma, ratings, item_embedding, user_embeddings, user_biases):
+    def update_item_bias(lam, gamma, ratings, item_embedding, user_embeddings, user_biases):
         if len(ratings) == 0:
             return 0.0
 
@@ -350,29 +367,6 @@ class Recommender:
         if len(ratings) == 0:
             return np.zeros((k, ))
 
-        item_indices = ratings[:,0].astype(int)
-        r_vec = ratings[:,1].reshape((-1, 1))
-        item_biases_vec = item_biases[item_indices].reshape((-1, 1))
-
-        vec = r_vec - item_biases_vec - user_bias
-
-        #sum should be be a k dimensional vector
-        num_sum = lam*(V[item_indices, :].T @ vec)
-
-        outer_matrix = np.zeros((k, k))
-        for row in V[item_indices, :]:
-            outer_matrix += np.outer(row, row)
-
-        matrix = lam*outer_matrix + tau*np.eye(k)
-
-        return np.linalg.solve(matrix, num_sum.reshape((-1,1))).reshape((k,))
-    
-    def update_user_embedding_optimized(lam, tau, V, ratings, user_bias, item_biases):
-        N, k = V.shape
-
-        if len(ratings) == 0:
-            return np.zeros((k, ))
-
         item_indices = ratings[:, 0].astype(int)
         r_vec = ratings[:, 1].reshape((-1, 1))
         item_biases_vec = item_biases[item_indices].reshape((-1, 1))
@@ -389,75 +383,15 @@ class Recommender:
 
         return np.linalg.solve(matrix, num_sum).flatten()
 
-    #not implemented since update_user_embedding is the exact same
-    def update_item_embedding(lam, tau, user_embeddings, ratings, item_bias, user_biases):
-        pass
+    #update_user_embedding is the exact same
+    def update_item_embedding(lam, tau, U, ratings, item_bias, user_biases):
+        return Recommender.update_user_embedding(lam, tau, U, ratings, item_bias, user_biases)
 
     def avg_inner_product(matrix):
         inner_products = np.einsum('ij,ij->i', matrix, matrix)
         return np.mean(inner_products)
-    
-    def init_statistics(self, biases_only=False):
-        statistics = {} 
-        statistics['neg_log_liks'] = []
-        statistics['RMSEs'] = []
-        statistics['mean_user_bias'] = []
-        statistics['mean_item_bias'] = []
 
-        if not biases_only:
-            statistics['user_embed_length'] = []
-            statistics['item_embed_length'] = []
-        
-        if self.train_test_split:
-            statistics['neg_log_liks_test'] = []
-            statistics['RMSEs_test'] = []
-            statistics['mean_user_bias_test'] = []
-            statistics['mean_item_bias_test'] = []
-
-            if not biases_only:
-                statistics['user_embed_length_test'] = []
-                statistics['item_embed_length_test'] = []
-
-
-        return statistics
-
-    def update_statistics(self, statistics, biases_only=False):
-        statistics['mean_user_bias'].append(np.mean(self.user_biases))
-        statistics['mean_item_bias'].append(np.mean(self.movie_biases))
-
-        if not biases_only:
-            neg_log_lik, RMSE = self.metrics()
-
-            statistics['neg_log_liks'].append(neg_log_lik)
-            statistics['RMSEs'].append(RMSE)
-            statistics['user_embed_length'].append(Recommender.avg_inner_product(self.U))
-            statistics['item_embed_length'].append(Recommender.avg_inner_product(self.V))
-        else:
-            neg_log_lik, RMSE = self.metrics_biases_only()
-
-            statistics['neg_log_liks'].append(neg_log_lik)
-            statistics['RMSEs'].append(RMSE)
-        
-        if self.train_test_split:
-            statistics['mean_user_bias_test'].append(np.mean(self.user_biases_test))
-            statistics['mean_item_bias_test'].append(np.mean(self.movie_biases_test))
-
-            if not biases_only:
-                neg_log_lik, RMSE = self.metrics(test=True)
-
-                statistics['neg_log_liks_test'].append(neg_log_lik)
-                statistics['RMSEs_test'].append(RMSE)
-                statistics['user_embed_length_test'].append(Recommender.avg_inner_product(self.U_test))
-                statistics['item_embed_length_test'].append(Recommender.avg_inner_product(self.V_test))
-            else:
-                neg_log_lik, RMSE = self.metrics_biases_only(test=True)
-
-                statistics['neg_log_liks_test'].append(neg_log_lik)
-                statistics['RMSEs_test'].append(RMSE)
-
-
-
-    def fit(self, max_iter=20):
+    def fit(self, max_iter=20, extra_stats=False):
         start_time = time.time()
         M = len(self.users)
         N = len(self.movies)
@@ -480,8 +414,8 @@ class Recommender:
             self.V_test = np.random.normal(0, 1/np.sqrt(self.k), size=(N, self.k))
 
 
-        statistics = self.init_statistics()
-        self.update_statistics(statistics)
+        statistics = self.init_statistics(extra_stats=extra_stats)
+        self.update_statistics(statistics, extra_stats=extra_stats)
 
         elapsed_time = time.time() - start_time
         print(f"Initialized variables and calculated statistics: {elapsed_time}s")
@@ -496,26 +430,26 @@ class Recommender:
         for m, user in zip(range(M), self.users):
             ratings = user.ratings
             #---user biases---
-            self.user_biases[m] = Recommender.update_user_bias_vectorized(self.lam, self.gamma, ratings, embedding_zeros, V_zeros, self.movie_biases)
+            self.user_biases[m] = Recommender.update_user_bias(self.lam, self.gamma, ratings, embedding_zeros, V_zeros, self.movie_biases)
 
             if self.train_test_split:
                 ratings_test = user.ratings_test
-                self.user_biases_test[m] = Recommender.update_user_bias_vectorized(self.lam, self.gamma, ratings_test, embedding_zeros, V_zeros, self.movie_biases_test)
+                self.user_biases_test[m] = Recommender.update_user_bias(self.lam, self.gamma, ratings_test, embedding_zeros, V_zeros, self.movie_biases_test)
 
         for n, item in zip(range(N), self.movies):
             ratings = item.ratings
             #---item biases---
-            self.movie_biases[n] = Recommender.update_item_bias_vectorized(self.lam, self.gamma, ratings, embedding_zeros, U_zeros, self.user_biases)
+            self.movie_biases[n] = Recommender.update_item_bias(self.lam, self.gamma, ratings, embedding_zeros, U_zeros, self.user_biases)
 
             if self.train_test_split:
                 ratings_test = item.ratings_test
                 #---item biases---
-                self.movie_biases_test[n] = Recommender.update_item_bias_vectorized(self.lam, self.gamma, ratings, embedding_zeros, U_zeros, self.user_biases)
+                self.movie_biases_test[n] = Recommender.update_item_bias(self.lam, self.gamma, ratings, embedding_zeros, U_zeros, self.user_biases)
         
         elapsed_time = time.time() - start_time
         print(f"Ran initial update to user and item biases: {elapsed_time}s")
 
-        self.update_statistics(statistics)
+        self.update_statistics(statistics, extra_stats=extra_stats)
 
         for it in tqdm(range(max_iter)):
             #update user parameters
@@ -523,18 +457,18 @@ class Recommender:
                 ratings = user.ratings
                 user_embedding = self.U[m,:]
                 #---user biases---
-                self.user_biases[m] = Recommender.update_user_bias_vectorized(self.lam, self.gamma, ratings, user_embedding, self.V, self.movie_biases)
+                self.user_biases[m] = Recommender.update_user_bias(self.lam, self.gamma, ratings, user_embedding, self.V, self.movie_biases)
                 #---user vectors---
-                user_embedding = Recommender.update_user_embedding_optimized(self.lam, self.tau, self.V, ratings, self.user_biases[m], self.movie_biases)
+                user_embedding = Recommender.update_user_embedding(self.lam, self.tau, self.V, ratings, self.user_biases[m], self.movie_biases)
                 self.U[m,:] = user_embedding
 
                 if self.train_test_split:
                     ratings_test = user.ratings_test
                     user_embedding_test = self.U_test[m,:]
                     #---user biases---
-                    self.user_biases_test[m] = Recommender.update_user_bias_vectorized(self.lam, self.gamma, ratings_test, user_embedding_test, self.V_test, self.movie_biases_test)
+                    self.user_biases_test[m] = Recommender.update_user_bias(self.lam, self.gamma, ratings_test, user_embedding_test, self.V_test, self.movie_biases_test)
                     #---user vectors---
-                    user_embedding_test = Recommender.update_user_embedding_optimized(self.lam, self.tau, self.V_test, ratings_test, self.user_biases_test[m], self.movie_biases_test)
+                    user_embedding_test = Recommender.update_user_embedding(self.lam, self.tau, self.V_test, ratings_test, self.user_biases_test[m], self.movie_biases_test)
                     self.U_test[m,:] = user_embedding_test
             
             #update movie parameters
@@ -542,25 +476,25 @@ class Recommender:
                 ratings = item.ratings
                 item_embedding = self.V[n,:]
                 #---item biases---
-                self.movie_biases[n] = Recommender.update_item_bias_vectorized(self.lam, self.gamma, ratings, item_embedding, self.U, self.user_biases)
+                self.movie_biases[n] = Recommender.update_item_bias(self.lam, self.gamma, ratings, item_embedding, self.U, self.user_biases)
                 #---item vectors---
-                item_embedding = Recommender.update_user_embedding_optimized(self.lam, self.tau, self.U, ratings, self.movie_biases[n], self.user_biases)
+                item_embedding = Recommender.update_item_embedding(self.lam, self.tau, self.U, ratings, self.movie_biases[n], self.user_biases)
                 self.V[n, :] = item_embedding
             
                 if self.train_test_split:
                     ratings_test = item.ratings_test
                     item_embedding_test = self.V_test[n,:]
                     #---item biases---
-                    self.movie_biases_test[n] = Recommender.update_item_bias_vectorized(self.lam, self.gamma, ratings_test, item_embedding_test, self.U_test, self.user_biases_test)
+                    self.movie_biases_test[n] = Recommender.update_item_bias(self.lam, self.gamma, ratings_test, item_embedding_test, self.U_test, self.user_biases_test)
                     #---item vectors---
-                    item_embedding_test = Recommender.update_user_embedding_optimized(self.lam, self.tau, self.U_test, ratings_test, self.movie_biases_test[n], self.user_biases_test)
+                    item_embedding_test = Recommender.update_item_embedding(self.lam, self.tau, self.U_test, ratings_test, self.movie_biases_test[n], self.user_biases_test)
                     self.V_test[n, :] = item_embedding_test
 
-            self.update_statistics(statistics)
+            self.update_statistics(statistics, extra_stats=extra_stats)
 
         return statistics 
 
-    def fit_biases_only(self, max_iter=20):
+    def fit_biases_only(self, max_iter=20, extra_stats=False):
         M = len(self.users)
         N = len(self.movies)
 
@@ -578,33 +512,33 @@ class Recommender:
         self.V = np.zeros((N, self.k)) 
         embedding_zeros = np.zeros((self.k, ))
 
-        statistics = self.init_statistics(biases_only=True)
-        self.update_statistics(statistics, biases_only=True)
+        statistics = self.init_statistics(biases_only=True, extra_stats=extra_stats)
+        self.update_statistics(statistics, biases_only=True, extra_stats=extra_stats)
 
         for it in tqdm(range(max_iter)):
             #update user parameters
             for m, user in zip(range(M), self.users):
                 ratings = user.ratings
                 #---user biases---
-                self.user_biases[m] = Recommender.update_user_bias_vectorized(self.lam, self.gamma, ratings, embedding_zeros, self.V, self.movie_biases)
+                self.user_biases[m] = Recommender.update_user_bias(self.lam, self.gamma, ratings, embedding_zeros, self.V, self.movie_biases)
 
                 if self.train_test_split:
                     ratings_test = user.ratings_test
                     #---user biases---
-                    self.user_biases_test[m] = Recommender.update_user_bias_vectorized(self.lam, self.gamma, ratings_test, embedding_zeros, self.V, self.movie_biases_test)
+                    self.user_biases_test[m] = Recommender.update_user_bias(self.lam, self.gamma, ratings_test, embedding_zeros, self.V, self.movie_biases_test)
 
 
             #update movie parameters
             for n, item in zip(range(N), self.movies):
                 ratings = item.ratings
                 #---item biases---
-                self.movie_biases[n] = Recommender.update_item_bias_vectorized(self.lam, self.gamma, ratings, embedding_zeros, self.U, self.user_biases)
+                self.movie_biases[n] = Recommender.update_item_bias(self.lam, self.gamma, ratings, embedding_zeros, self.U, self.user_biases)
                 if self.train_test_split:
                     ratings_test = item.ratings_test
                     #---item biases---
-                    self.movie_biases_test[n] = Recommender.update_item_bias_vectorized(self.lam, self.gamma, ratings_test, embedding_zeros, self.U, self.user_biases_test)
+                    self.movie_biases_test[n] = Recommender.update_item_bias(self.lam, self.gamma, ratings_test, embedding_zeros, self.U, self.user_biases_test)
 
-            self.update_statistics(statistics, biases_only=True)
+            self.update_statistics(statistics, biases_only=True, extra_stats=extra_stats)
 
         return statistics 
 
