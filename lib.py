@@ -26,8 +26,11 @@ class User:
 class Recommender:
 
     def __init__(self, k = 20, gamma=0.02, lam=0.05, tau=0.05):
+        #map user id to to user index
         self.uid_map = {}
+        #map movie id to movie index
         self.mid_map = {}
+        #map movie title to movie id
         self.movie_title_to_id = {}
 
         self.users = []
@@ -55,10 +58,14 @@ class Recommender:
             # Iterate over the rows
             u_index = 0
             m_index = 0
+            self.max_uid = -1
             for row in reader:
                 user_id = int(row['userId'])
                 movie_id = int(row['movieId'])
                 rating = float(row['rating'])
+
+                if user_id > self.max_uid:
+                    self.max_uid = user_id
 
                 is_training_instance = True
 
@@ -124,6 +131,39 @@ class Recommender:
 
             if train_test_split:
                 movie.ratings_test = np.array(movie.ratings_test)
+    
+    def insert_dummy_user(self, ratings):
+        uid = self.max_uid + 1
+
+        self.uid_map[uid] = len(self.users)
+        user = User(uid, [], [])
+        self.users.append(user)
+        #ratings is a list containing a list of tuples
+        for movie_title, rating in ratings:
+            mid = self.movie_title_to_id[movie_title]
+            assert mid is not None
+            movie_rating = np.array([self.uid_map[uid], rating])
+            self.movies[self.mid_map[mid]].ratings = np.vstack((self.movies[self.mid_map[mid]].ratings, movie_rating))
+            user.ratings.append((self.mid_map[mid], rating))
+
+        user.ratings = np.array(user.ratings)
+
+        self.max_uid += 1
+        return uid
+
+    def predict_movies_for_user(self, uid, biases_only=False):
+        #return movie recommendations
+        user_index = self.uid_map[uid]
+        user_embedding = self.U[user_index, :]
+        assert user_embedding.shape[0] == self.k
+        
+        inner_products = self.V.dot(user_embedding)
+        with_biases = inner_products + self.movie_biases + self.user_biases[user_index]
+        sorted_indices = np.argsort(-with_biases)
+        
+        ratings = with_biases[sorted_indices]
+        titles = np.array([self.movies[idx].title for idx in sorted_indices])
+        return ratings, titles
             
     def neg_log_likelihood(self):
         sum_ratings = 0.0
