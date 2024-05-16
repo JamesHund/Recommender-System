@@ -1,9 +1,7 @@
-from dataclasses import dataclass
 from typing import Tuple, List
 import csv
 import numpy as np
 from tqdm import tqdm
-from numba import njit
 import time
 import random
 
@@ -44,6 +42,11 @@ class Recommender:
     
     def set_k(self, k):
         self.k = k
+    
+    def set_params(self, gamma, lam, tau):
+        self.gamma = gamma
+        self.lam = lam
+        self.tau = tau
 
     #populate users and movies adjacency list
     def initialize_from_csv(self, movies_csv_location, ratings_csv_location, train_test_split=False, train_ratio = 0.8):
@@ -415,10 +418,10 @@ class Recommender:
 
 
         statistics = self.init_statistics(extra_stats=extra_stats)
-        self.update_statistics(statistics, extra_stats=extra_stats)
+        #self.update_statistics(statistics, extra_stats=extra_stats)
 
         elapsed_time = time.time() - start_time
-        print(f"Initialized variables and calculated statistics: {elapsed_time}s")
+        print(f"Initialized variables and statistics: {elapsed_time}s")
 
 
         #initial update to user and item biases
@@ -446,10 +449,9 @@ class Recommender:
                 #---item biases---
                 self.movie_biases_test[n] = Recommender.update_item_bias(self.lam, self.gamma, ratings, embedding_zeros, U_zeros, self.user_biases)
         
+        self.update_statistics(statistics, extra_stats=extra_stats)
         elapsed_time = time.time() - start_time
         print(f"Ran initial update to user and item biases: {elapsed_time}s")
-
-        self.update_statistics(statistics, extra_stats=extra_stats)
 
         for it in tqdm(range(max_iter)):
             #update user parameters
@@ -513,7 +515,7 @@ class Recommender:
         embedding_zeros = np.zeros((self.k, ))
 
         statistics = self.init_statistics(biases_only=True, extra_stats=extra_stats)
-        self.update_statistics(statistics, biases_only=True, extra_stats=extra_stats)
+        #self.update_statistics(statistics, biases_only=True, extra_stats=extra_stats)
 
         for it in tqdm(range(max_iter)):
             #update user parameters
