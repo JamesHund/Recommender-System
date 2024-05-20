@@ -2,6 +2,7 @@ import matplotlib.pylab as plt
 import math
 import numpy as np
 import seaborn as sns
+from adjustText import adjust_text
 
 def plot_user_movie_ratings(rec):
     user_freq = {}
@@ -161,4 +162,30 @@ def plot_statistics(statistics, train_test_split=True, biases_only=False, extra_
         
         plt.savefig(f"plots/extra_stats_{save_suffix}.pdf", format='pdf', transparent=True)
 
+    plt.show()
+
+def plot_movie_embeddings(titles, embeddings):
+    # Ensure embeddings is a numpy array
+    embeddings = np.array(embeddings)
+    
+    # Create a scatter plot
+    plt.figure(figsize=(10, 6))
+    plt.scatter(embeddings[:, 0], embeddings[:, 1], color='blue')
+    plt.scatter(0, 0, color='red', marker='+', s=100)
+
+    
+    # Add titles next to the points
+    texts = []
+    for i, title in enumerate(titles):
+        texts.append(plt.text(embeddings[i, 0], embeddings[i, 1], title, fontsize=8))
+    
+    # Adjust text to avoid overlap
+    adjust_text(texts, arrowprops=dict(arrowstyle='->', color='red'))
+    
+    # Set plot labels and title
+    plt.xlabel('Latent Dimension 1')
+    plt.ylabel('Latent Dimension 2')
+    plt.title('2D Movie Embeddings Scatter Plot')
+    plt.savefig("plots/2D_vis.pdf", format='pdf', transparent=True) 
+    # Show the plot
     plt.show()

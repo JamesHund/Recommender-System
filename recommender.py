@@ -147,10 +147,9 @@ class Recommender:
             assert mid is not None
             movie_rating = np.array([self.uid_map[uid], rating])
             self.movies[self.mid_map[mid]].ratings = np.vstack((self.movies[self.mid_map[mid]].ratings, movie_rating))
-            user.ratings.append((self.mid_map[mid], rating))
+            user.ratings.append(np.array([self.mid_map[mid], rating]))
 
         user.ratings = np.array(user.ratings)
-
         self.max_uid += 1
         return uid
 
@@ -170,6 +169,19 @@ class Recommender:
         ratings = expected_rating[sorted_indices]
         titles = np.array([self.movies[idx].title for idx in sorted_indices])
         return ratings, titles
+
+    def predict_most_polarizing(self):
+        lengths = np.linalg.norm(self.V, axis=1)
+        sorted_indices = np.argsort(lengths)[::-1]
+        titles = np.array([self.movies[idx].title for idx in sorted_indices])
+
+        return lengths, titles
+    
+    def get_movie_embedding_by_title(self, movie_title):
+        mid = self.movie_title_to_id[movie_title]
+        n = self.mid_map[mid]
+
+        return self.V[n, :] + self.movie_biases[n]
             
     def metrics(self, test=False):
         if not test:
@@ -304,8 +316,15 @@ class Recommender:
         for suffix in suffixes:
             test = "test" in suffix
             if extra_stats:
-                statistics[f'mean_user_bias{suffix}'].append(np.mean(self.user_biases))
-                statistics[f'mean_item_bias{suffix}'].append(np.mean(self.movie_biases))
+                if not test:
+                    user_biases = self.user_biases
+                    movie_biases = self.movie_biases
+                else:
+                    user_biases = self.user_biases_test
+                    movie_biases = self.movie_biases_test
+
+                statistics[f'mean_user_bias{suffix}'].append(np.mean(user_biases))
+                statistics[f'mean_item_bias{suffix}'].append(np.mean(movie_biases))
 
             if not biases_only:
                 neg_log_lik, RMSE = self.metrics(test=test)
@@ -314,8 +333,14 @@ class Recommender:
                 statistics[f'RMSEs{suffix}'].append(RMSE)
 
                 if extra_stats:
-                    statistics[f'user_embed_length{suffix}'].append(Recommender.avg_inner_product(self.U))
-                    statistics[f'item_embed_length{suffix}'].append(Recommender.avg_inner_product(self.V))
+                    if not test:
+                        U = self.U
+                        V = self.V
+                    else:
+                        U = self.U_test
+                        V = self.V_test
+                    statistics[f'user_embed_length{suffix}'].append(Recommender.avg_inner_product(U))
+                    statistics[f'item_embed_length{suffix}'].append(Recommender.avg_inner_product(V))
             else:
                 neg_log_lik, RMSE = self.metrics_biases_only(test=test)
 
@@ -547,5 +572,5 @@ class Recommender:
 def run_cmdline():
     rec = Recommender(lam=0.01, gamma=0.01, tau=0.01)
     rec.initialize_from_csv("ml-latest-small/movies.csv", "ml-latest-small/ratings.csv")
-    print(len(rec.users))
-    print(len(rec.movies))
+    stats = rec.fit(max_iter=20)
+    print(stats["RMSE"][-1])
